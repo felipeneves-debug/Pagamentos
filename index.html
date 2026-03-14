@@ -166,6 +166,295 @@
 <script>
 // ===================== SUPABASE CONFIG =====================
 const SUPABASE_URL = "https://ynnwpusrlslmgztxipih.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlubndwdXNybHNsbWd6dHhpcGloIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1MDczMzYsImV4cCI6MjA4OTA4MzMzNn0.DEoxBydMtxDvNFitcclKh2lAUVrUv9PPnA1B3XOkTgw";
+const HEADERS = {
+  "Content-Type": "application/json",
+  "apikey": SUPABASE_KEY,
+  "Authorization": "Bearer " + SUPABASE_KEY,
+  "Prefer": "return=representation"
+};
+
+async function dbGet() {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/pagamentos?select=*&order=id`, {headers: HEADERS});
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function dbInsert(p) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/pagamentos`, {method:"POST", headers: HEADERS, body: JSON.stringify(toDb(p))});
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function dbUpdate(id, p) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/pagamentos?id=eq.${id}`, {method:"PATCH", headers: HEADERS, body: JSON.stringify(toDb(p))});
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function dbDelete(id) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/pagamentos?id=eq.${id}`, {method:"DELETE", headers: HEADERS});
+  if (!r.ok) throw new Error(await r.text());
+}
+
+function toDb(p) {
+  return { nome: p.nome, valor: p.valor, dia_vencimento: p.diaVencimento, data_inicio: p.dataInicio||null, data_fim: p.dataFim||null, email: p.email, telefone: p.telefone, cor: p.cor };
+}
+function fromDb(r) {
+  return { id: r.id, nome: r.nome, valor: Number(r.valor), diaVencimento: r.dia_vencimento, dataInicio: r.data_inicio, dataFim: r.data_fim, email: r.email||"", telefone: r.telefone||"", cor: r.cor||"#a78bfa" };
+}
+
+// ===================== APP =====================
+const CORES = ["#4ade80","#60a5fa","#f472b6","#fb923c","#a78bfa","#facc15","#34d399","#f87171"];
+const MONTHS = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+const DOWS = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+
+let payments = [];
+let editingId = null;
+let deletingId = null;
+let selectedCor = "#a78bfa";
+let currentTab = "lista";
+
+function showToast(msg, err=false) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "toast show" + (err?" error":"");
+  setTimeout(()=>t.className="toast",2500);
+}
+
+function parseDate(s) { if(!s)return null; const[y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d); }
+function isEnded(p) { const f=parseDate(p.dataFim); return f?f<new Date():false; }
+function isOverdue(p) { if(isEnded(p))return false; const t=new Date(); return t>new Date(t.getFullYear(),t.getMonth(),p.diaVencimento); }
+function formatBRL(v) { return Number(v).toLocaleString("pt-BR",{style:"currency",currency:"BRL"}); }
+function formatDate(s) { return s?s.split("-").reverse().join("/"):"—"; }
+function getMonthCount(s,e) { const st=parseDate(s),en=parseDate(e); if(!st||!en)return 0; let c=0,cur=new Date(st.getFullYear(),st.getMonth(),1); while(cur<=en){c++;cur.setMonth(cur.getMonth()+1);} return c; }
+
+function badge(p) {
+  if(isEnded(p)) return `<span class="badge badge-end">Encerrado</span>`;
+  if(isOverdue(p)) return `<span class="badge badge-late">Vencido</span>`;
+  return `<span class="badge badge-ok">Em dia</span>`;
+}
+
+function renderList() {
+  const c = document.getElementById("listContainer");
+  if(payments.length===0){ c.innerHTML=`<div class="empty"><div style="font-size:40px">🏦</div><div style="margin-top:10px">Nenhum pagamento cadastrado</div></div>`; return; }
+  c.innerHTML = payments.map(p=>`
+    <div class="pay-row" style="opacity:${isEnded(p)?0.5:1}">
+      <div class="pay-dot" style="background:${p.cor};box-shadow:0 0 7px ${p.cor}88"></div>
+      <div class="pay-info">
+        <div class="pay-name">${p.nome}</div>
+        <div class="pay-meta">Dia <b>${p.diaVencimento}</b> · ${getMonthCount(p.dataInicio,p.dataFim)} parcelas${p.email?` · ✉️ ${p.email}`:""}${p.telefone?` · 📱 ${p.telefone}`:""}</div>
+      </div>
+      <div class="pay-value"><div class="pay-amount" style="color:${p.cor}">${formatBRL(p.valor)}</div><div class="pay-per">por mês</div></div>
+      <div class="pay-dates"><div>🗓 <span>${formatDate(p.dataInicio)}</span></div><div>🔚 <span>${formatDate(p.dataFim)}</span></div></div>
+      <div style="min-width:75px;text-align:center">${badge(p)}</div>
+      <div class="pay-actions">
+        <button class="btn-edit" onclick="openEdit(${p.id})">✏️ Editar</button>
+        <button class="btn-del" onclick="openDel(${p.id})">🗑</button>
+      </div>
+    </div>`).join("");
+}
+
+function renderTotal() {
+  document.getElementById("totalValue").textContent = formatBRL(payments.filter(p=>!isEnded(p)).reduce((a,p)=>a+p.valor,0));
+}
+
+function renderCal() {
+  const today=new Date(), cy=today.getFullYear(), cm=today.getMonth();
+  document.getElementById("calTitle").textContent=`${MONTHS[cm]} ${cy}`;
+  document.getElementById("calDow").innerHTML=DOWS.map(d=>`<div class="cal-dow">${d}</div>`).join("");
+  const dim=new Date(cy,cm+1,0).getDate(), fd=new Date(cy,cm,1).getDay();
+  let html=Array(fd).fill('<div></div>').join("");
+  for(let d=1;d<=dim;d++){
+    const isT=d===today.getDate();
+    const due=payments.filter(p=>{
+      if(isEnded(p))return false;
+      const s=parseDate(p.dataInicio),e=parseDate(p.dataFim),dt=new Date(cy,cm,d);
+      return p.diaVencimento===d&&dt>=s&&dt<=e;
+    });
+    html+=`<div class="cal-day${isT?" today":""}"><div class="cal-day-num">${d}</div>${due.map(p=>`<div class="cal-chip" style="background:${p.cor}22;border:1px solid ${p.cor}44;color:${p.cor}">${formatBRL(p.valor)}</div>`).join("")}</div>`;
+  }
+  document.getElementById("calGrid").innerHTML=html;
+  document.getElementById("calLegend").innerHTML=payments.filter(p=>!isEnded(p)).map(p=>`<div class="cal-legend-item"><div class="cal-legend-dot" style="background:${p.cor}"></div>${p.nome} — dia ${p.diaVencimento}</div>`).join("");
+}
+
+function render() { renderList(); renderTotal(); if(currentTab==="cal") renderCal(); }
+
+function switchTab(t) {
+  currentTab=t;
+  document.getElementById("panel-lista").style.display=t==="lista"?"block":"none";
+  document.getElementById("panel-cal").style.display=t==="cal"?"block":"none";
+  document.getElementById("tab-lista").className="tab"+(t==="lista"?" active":"");
+  document.getElementById("tab-cal").className="tab"+(t==="cal"?" active":"");
+  if(t==="cal") renderCal();
+}
+
+function renderColorPicker(sel) {
+  document.getElementById("colorRow").innerHTML=CORES.map(c=>`<div class="color-dot${c===sel?" selected":""}" style="background:${c};${c===sel?"box-shadow:0 0 8px "+c:""}" onclick="selectCor('${c}')"></div>`).join("");
+}
+function selectCor(c) { selectedCor=c; renderColorPicker(c); }
+
+function openNew() {
+  editingId=null; selectedCor="#a78bfa";
+  document.getElementById("modalTitle").textContent="➕ Novo Pagamento";
+  document.getElementById("btnSaveLabel").textContent="Adicionar";
+  ["fNome","fValor","fDia","fInicio","fFim","fEmail","fTel"].forEach(id=>document.getElementById(id).value="");
+  renderColorPicker(selectedCor);
+  document.getElementById("modalOverlay").classList.add("open");
+}
+
+function openEdit(id) {
+  const p=payments.find(x=>x.id===id); if(!p)return;
+  editingId=id; selectedCor=p.cor;
+  document.getElementById("modalTitle").textContent="✏️ Editar Pagamento";
+  document.getElementById("btnSaveLabel").textContent="Salvar";
+  document.getElementById("fNome").value=p.nome;
+  document.getElementById("fValor").value=p.valor;
+  document.getElementById("fDia").value=p.diaVencimento;
+  document.getElementById("fInicio").value=p.dataInicio||"";
+  document.getElementById("fFim").value=p.dataFim||"";
+  document.getElementById("fEmail").value=p.email;
+  document.getElementById("fTel").value=p.telefone;
+  renderColorPicker(selectedCor);
+  document.getElementById("modalOverlay").classList.add("open");
+}
+
+function closeModal() { document.getElementById("modalOverlay").classList.remove("open"); }
+
+async function handleSave() {
+  const nome=document.getElementById("fNome").value.trim();
+  const valor=parseFloat(document.getElementById("fValor").value);
+  const dia=parseInt(document.getElementById("fDia").value);
+  if(!nome||isNaN(valor)||isNaN(dia)){ showToast("⚠️ Preencha Nome, Valor e Dia!",true); return; }
+  const entry={ nome, valor, diaVencimento:dia, dataInicio:document.getElementById("fInicio").value||null, dataFim:document.getElementById("fFim").value||null, email:document.getElementById("fEmail").value.trim(), telefone:document.getElementById("fTel").value.trim(), cor:selectedCor };
+  const btn=document.getElementById("btnSaveLabel");
+  btn.textContent="⏳ Salvando...";
+  try {
+    if(editingId===null){
+      const res=await dbInsert(entry);
+      payments.push(fromDb(res[0]));
+      showToast("✓ Pagamento adicionado!");
+    } else {
+      await dbUpdate(editingId, entry);
+      payments=payments.map(p=>p.id===editingId?{...fromDb({...toDb(entry),id:editingId})}:p);
+      showToast("✓ Pagamento atualizado!");
+    }
+    render(); closeModal();
+  } catch(e) {
+    showToast("❌ Erro ao salvar. Verifique o banco.",true);
+    console.error(e);
+  }
+  btn.textContent=editingId===null?"Adicionar":"Salvar";
+}
+
+function openDel(id) { deletingId=id; document.getElementById("delOverlay").classList.add("open"); }
+function closeDelModal() { document.getElementById("delOverlay").classList.remove("open"); deletingId=null; }
+
+async function confirmDelete() {
+  try {
+    await dbDelete(deletingId);
+    payments=payments.filter(p=>p.id!==deletingId);
+    showToast("✓ Pagamento excluído!");
+    render(); closeDelModal();
+  } catch(e) {
+    showToast("❌ Erro ao excluir.",true);
+    console.error(e);
+  }
+}
+
+document.getElementById("modalOverlay").addEventList  .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+  .form-full{grid-column:1/-1}
+  .form-label{font-size:10px;font-weight:600;color:#64748b;margin-bottom:3px;letter-spacing:.5px;text-transform:uppercase}
+  .form-input{width:100%;background:#13131f;border:1px solid #2d2d44;border-radius:8px;padding:8px 11px;color:#e2e8f0;font-size:13px;outline:none;transition:border-color .15s}
+  .form-input:focus{border-color:#7c3aed}
+  .color-row{display:flex;gap:7px;margin-top:5px;flex-wrap:wrap}
+  .color-dot{width:22px;height:22px;border-radius:50%;cursor:pointer;border:3px solid transparent;transition:all .15s}
+  .color-dot.selected{border-color:#fff}
+  .modal-actions{display:flex;gap:8px;margin-top:18px;justify-content:flex-end}
+  .btn-cancel{background:#1e1e2e;border:1px solid #2d2d44;border-radius:9px;padding:9px 16px;color:#94a3b8;font-weight:500}
+  .btn-save{background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;border-radius:9px;padding:9px 20px;color:#fff;font-weight:700;font-size:13px}
+  .del-modal{background:#0f0f1a;border:1px solid #3b1a1a;border-radius:14px;padding:28px;max-width:340px;width:100%;text-align:center}
+  .btn-del-confirm{background:#7f1d1d;border:1px solid #ef4444;border-radius:9px;padding:9px 16px;color:#fca5a5;font-weight:700}
+  @media(max-width:600px){
+    .header{padding:12px 14px}
+    .tabs,.content{padding-left:14px;padding-right:14px}
+    .pay-dates{display:none}
+    .form-grid{grid-template-columns:1fr}
+    .form-full{grid-column:1}
+  }
+</style>
+</head>
+<body>
+
+<div class="toast" id="toast"></div>
+
+<div class="header">
+  <div>
+    <div class="logo">💸 Controle de Pagamentos</div>
+    <div class="subtitle">Gerencie seus compromissos financeiros</div>
+  </div>
+  <div class="header-right">
+    <div class="total-box">
+      <div class="total-label">Total / mês</div>
+      <div class="total-value" id="totalValue">R$ 0,00</div>
+    </div>
+    <button class="btn-new" onclick="openNew()">＋ Novo</button>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="tab active" id="tab-lista" onclick="switchTab('lista')">📋 Lista</button>
+  <button class="tab" id="tab-cal" onclick="switchTab('cal')">📅 Calendário</button>
+</div>
+
+<div class="content">
+  <div class="panel" id="panel-lista">
+    <div id="listContainer"><div class="loading">⏳ Carregando...</div></div>
+  </div>
+  <div class="panel" id="panel-cal" style="display:none">
+    <div class="cal-panel">
+      <div class="cal-title" id="calTitle"></div>
+      <div class="cal-grid" id="calDow"></div>
+      <div class="cal-grid" id="calGrid" style="margin-top:4px"></div>
+      <div class="cal-legend" id="calLegend"></div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL FORM -->
+<div class="overlay" id="modalOverlay">
+  <div class="modal">
+    <div class="modal-title" id="modalTitle">➕ Novo Pagamento</div>
+    <div class="form-grid">
+      <div class="form-full"><div class="form-label">Nome / Pessoa</div><input class="form-input" id="fNome" placeholder="Ex: João Silva" type="text"/></div>
+      <div><div class="form-label">Valor (R$)</div><input class="form-input" id="fValor" placeholder="800" type="number" min="0"/></div>
+      <div><div class="form-label">Dia do vencimento</div><input class="form-input" id="fDia" placeholder="10" type="number" min="1" max="31"/></div>
+      <div><div class="form-label">Data de início</div><input class="form-input" id="fInicio" type="date"/></div>
+      <div><div class="form-label">Data de finalização</div><input class="form-input" id="fFim" type="date"/></div>
+      <div><div class="form-label">E-mail</div><input class="form-input" id="fEmail" placeholder="email@exemplo.com" type="email"/></div>
+      <div><div class="form-label">Telefone</div><input class="form-input" id="fTel" placeholder="(11) 99999-9999" type="text"/></div>
+      <div class="form-full"><div class="form-label">Cor</div><div class="color-row" id="colorRow"></div></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">Cancelar</button>
+      <button class="btn-save" onclick="handleSave()" id="btnSaveLabel">Adicionar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL DELETE -->
+<div class="overlay" id="delOverlay">
+  <div class="del-modal">
+    <div style="font-size:36px">⚠️</div>
+    <div style="font-weight:700;font-size:16px;margin:10px 0 6px">Excluir pagamento?</div>
+    <div style="color:#6b7280;font-size:12px">Essa ação não pode ser desfeita.</div>
+    <div class="modal-actions" style="justify-content:center;margin-top:18px">
+      <button class="btn-cancel" onclick="closeDelModal()">Cancelar</button>
+      <button class="btn-del-confirm" onclick="confirmDelete()">Excluir</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===================== SUPABASE CONFIG =====================
+const SUPABASE_URL = "https://ynnwpusrlslmgztxipih.supabase.co";
 const SUPABASE_KEY = "sb_publishable_ZNUVAIGNgPIwTvyW9gLdDw_YgQ3My3q";
 const HEADERS = {
   "Content-Type": "application/json",
